@@ -731,51 +731,29 @@ int appendWorkTree(WorkTree* wt, char* name, char* hash, int mode) {
 	return 0;
 }
 char* wtts(WorkTree* wt) {
-	if (wt == NULL || wt->n == 0) {
-		return NULL;
-	}
-	
-	int total_length = 0;
-	char** workfile_strings = (char**) malloc(wt->n * sizeof(char*));
-	
-	if (workfile_strings == NULL) {
-		fprintf(stderr, "Memory allocation error\n");
-		return NULL;
-	}
-	
+	// Calculate the required buffer size
+	size_t buffer_size = 0;
 	for (int i = 0; i < wt->n; i++) {
-		workfile_strings[i] = wfts(&wt->tab[i]);
-		if (workfile_strings[i] == NULL) {
-			for (int j = 0; j < i; j++) {
-				free(workfile_strings[j]);
-			}
-			free(workfile_strings);
-			return NULL;
-		}
-		total_length += strlen(workfile_strings[i]) + 1;
+		buffer_size += strlen(wt->tab[i].name) + strlen(wt->tab[i].hash) + 20; // 20 for mode and delimiters
 	}
 	
-	char* result = (char*) malloc((total_length + 1) * sizeof(char));
-	if (result == NULL) {
-		fprintf(stderr, "Memory allocation error\n");
-		for (int i = 0; i < wt->n; i++) {
-			free(workfile_strings[i]);
-		}
-		free(workfile_strings);
-		return NULL;
+	// Allocate the buffer
+	char* buffer = (char*)malloc(buffer_size + 1);
+	if (!buffer) {
+		perror("malloc");
+		exit(EXIT_FAILURE);
 	}
+	buffer[0] = '\0'; // Initialize as empty string
 	
-	result[0] = '\0';
+	// Concatenate each WorkFile's string representation to the buffer
 	for (int i = 0; i < wt->n; i++) {
-		strcat(result, workfile_strings[i]);
-		if (i < wt->n - 1) {
-			strcat(result, "\n");
-		}
-		free(workfile_strings[i]);
+		char* wf_str = wfts(&wt->tab[i]);
+		strcat(buffer, wf_str);
+		strcat(buffer, "\n");
+		free(wf_str);
 	}
-	free(workfile_strings);
 	
-	return result;
+	return buffer;
 }
 WorkTree* stwt(char* ch) {
 	if (ch == NULL) {
@@ -823,53 +801,48 @@ int wttf(WorkTree* wt, char* file) {
 	
 	return 0;
 }
-WorkTree* ftwt(char* file) {
-	if (file == NULL) {
+WorkTree* ftwt(const char* file_path) {
+	FILE* file = fopen(file_path, "r");
+	if (!file) {
+		perror("fopen");
 		return NULL;
 	}
 	
-	FILE* fp = fopen(file, "r");
-	if (fp == NULL) {
-		fprintf(stderr, "Error opening file %s\n", file);
+	WorkTree* wt = initWorkTree();
+	if (!wt) {
+		fclose(file);
 		return NULL;
 	}
 	
-	// Obtient la taille du fichier
-	fseek(fp, 0, SEEK_END);
-	long file_size = ftell(fp);
-	rewind(fp);
-	
-	// Alloue un tampon de mémoire pour contenir le contenu du fichier
-	char* file_contents = (char*) malloc((file_size + 1) * sizeof(char));
-	if (file_contents == NULL) {
-		fprintf(stderr, "Memory allocation error\n");
-		fclose(fp);
-		return NULL;
+	char line[256];  // Buffer to hold each line read from the file
+	while (fgets(line, sizeof(line), file)) {
+		// Removing newline character if present
+		size_t len = strlen(line);
+		if (len > 0 && line[len - 1] == '\n') {
+			line[len - 1] = '\0';
+		}
+		
+		WorkFile* wf = stwf(line);
+		if (wf) {
+			if (appendWorkTree(wt, wf->name, wf->hash, wf->mode) == -1) {
+				printf("Error: Could not append WorkFile to WorkTree.\n");
+				freeWorkFile(wf);
+				freeWorkTree(wt);
+				fclose(file);
+				return NULL;
+			}
+			freeWorkFile(wf); // free the temporary WorkFile
+		} else {
+			printf("Error: Could not convert string to WorkFile.\n");
+			freeWorkTree(wt);
+			fclose(file);
+			return NULL;
+		}
 	}
 	
-	// Lit le contenu du fichier dans le tampon de mémoire
-	size_t read_size = fread(file_contents, sizeof(char), file_size, fp);
-	if (read_size != file_size) {
-		fprintf(stderr, "Error reading file %s\n", file);
-		free(file_contents);
-		fclose(fp);
-		return NULL;
-	}
-	
-	// Ajoute un caractère de fin de chaîne au tampon de mémoire
-	file_contents[file_size] = '\0';
-	
-	fclose(fp);
-	
-	// Convertit le contenu du fichier en un WorkTree
-	WorkTree* wt = stwt(file_contents);
-	
-	// Libère le tampon de mémoire
-	free(file_contents);
-	
+	fclose(file);
 	return wt;
 }
-
 #define MAX_PATH_LENGTH 1024
 WorkTree* listdir1(char* dir_path) {
 	DIR* dir = opendir(dir_path);
@@ -1184,6 +1157,7 @@ void restoreWorkTree(WorkTree* wt, char* snapshot_dir, char* path) {
 			path[strlen(path) - strlen(wf->name) - 1] = '\0'; // Supprimer le nom du répertoire ajouté
 		}
 	}
+	strcat(path, "/restored");
 }
 
 // Fonction pour créer un enregistrement instantané du WorkTree et retourner son hash
@@ -1360,7 +1334,7 @@ int main() {
 	char* dir1_hash = "hash3";
 	int dir1_mode = 0755;
 	char* file_path = "/home/helmi/Documents/test.txt";
-	char* snapshot_dir = "/home/helmi/Documents/snapshots";
+	char* snapshot_dir = "/home/helmi/Documents/snapshots1";
 	char* restore_dir = "/home/helmi/Documents/restored";
 	// Add files to WorkTree
 	appendWorkTree(wt, file1_path, file1_hash, file1_mode);
@@ -1402,11 +1376,45 @@ int main() {
 	free(restored_wt_string);
 	
 	// Clean up WorkTree
-	freeWorkTree(wt);
-	// Clean up WorkTree
-	freeWorkTree(wt);
-	return 0;
-}
 
 
+	//fichierss
+	printf("_____________fichiers____________\n");
+// Step 1: Create a WorkTree and populate it
+	WorkTree* wt1 = initWorkTree();
+	appendWorkTree(wt1, "file1.txt", "hash1", 0644);
+	appendWorkTree(wt1, "file2.txt", "hash2", 0644);
+	appendWorkTree(wt1, "dir1", "hash3", 0755);
+	
+	// Step 2: Save the WorkTree to a file
+	char* wt_str = wtts(wt1);
+	FILE* file = fopen("/home/helmi/Documents/cc", "w");
+	if (file != NULL) {
+		fprintf(file, "%s", wt_str);
+		fclose(file);
+	} else {
+		printf("Error: Could not open file for writing.\n");
+		free(wt_str);
+		freeWorkTree(wt1);
+		return 1;
+	}
+
+	// Step 3: Read the WorkTree representation from file
+	char* file_path1 = "/home/helmi/Documents/cc";
+	WorkTree* restored_wt = ftwt(file_path1);
+	if (restored_wt == NULL) {
+		printf("Error: Failed to restore WorkTree from file.\n");
+		freeWorkTree(wt1);
+		return 1;
+	}
+
+	// Step 4: Print the restored WorkTree
+	char* restored_wt_str = wtts(restored_wt);
+	printf("Restored WorkTree:\n%s", restored_wt_str);
+	free(restored_wt_str);
+	
+	// Step 5: Clean up
+	freeWorkTree(wt1);
+	freeWorkTree(restored_wt);
+	return 0;}
 
